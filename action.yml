@@ -48,15 +48,15 @@ runs:
           port="${ports[$i]}"
 
           # write google application credentials to a temporary file to be used inside the container
-          mkdir -p /tmp/gce-cloudsql-proxy-$i
-          echo '${{ inputs.creds }}' > /tmp/gce-cloudsql-proxy-$i/key.json
+          mkdir -p $HOME/gce-cloudsql-proxy/$i
+          echo '${{ inputs.creds }}' > $HOME/gce-cloudsql-proxy/$i/key.json
 
           # start container
           docker run -d --net host --name gce-cloudsql-proxy-$i --restart on-failure \
-          -v /tmp/gce-cloudsql-proxy-$i:/tmp/gce-cloudsql-proxy \
+          -v $HOME/gce-cloudsql-proxy/$i:/tmp/gce-cloudsql-proxy \
           gcr.io/cloudsql-docker/gce-proxy:$proxy_version \
           /cloud_sql_proxy \
-            -credential_file /tmp/gce-cloudsql-proxy-$i/key.json \
+            -credential_file /tmp/gce-cloudsql-proxy/key.json \
             -dir /tmp \
             -instances=$instance=tcp:127.0.0.1:$port
 
