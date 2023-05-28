@@ -3,7 +3,7 @@ description: "Start Google CloudSQL Proxy"
 
 branding:
   icon: "database"
-  color: "red"
+  color: "purple"
 
 inputs:
   creds:
