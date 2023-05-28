@@ -9,54 +9,78 @@ inputs:
   creds:
     description: "Contents of a Service Account JSON Key"
     required: true
-  instance:
-    description: "CloudSQL instance"
+  instances:
+    description: "CloudSQL instances (comma-separated)"
     required: true
-  port:
-    description: "Listen on port"
+  ports:
+    description: "Listen ports (comma-separated)"
     required: false
-    default: 5432
+    default: "5432"
   proxy_version:
     description: "CloudSQL Proxy Version"
     required: false
-    default: 1.21.0
+    default: "1.21.0"
 
 runs:
   using: "composite"
   steps:
     - name: Start Google Cloud SQL Proxy
+      id: proxy
       shell: bash
       run: |
-        # write google application credentials to a temporary file to be used inside the container
-        TMPDIR=$(mktemp -d)
-        echo '${{ inputs.creds }}' > $TMPDIR/key.json
+        instances=(${{ inputs.instances }})
+        ports=(${{ inputs.ports }})
+        proxy_version="${{ inputs.proxy_version }}"
 
-        # start container
-        CONTAINER=$(docker run -d --net host --restart on-failure \
-        -v $TMPDIR:/tmp/gce-cloudsql-proxy \
-        gcr.io/cloudsql-docker/gce-proxy:${{ inputs.proxy_version }} \
-        /cloud_sql_proxy \
-          -credential_file $TMPDIR/key.json \
-          -dir /tmp \
-          -instances=${{ inputs.instance }}=tcp:127.0.0.1:${{ inputs.port }})
+        # Split comma-separated inputs into arrays
+        IFS=',' read -ra instances <<< "$instances"
+        IFS=',' read -ra ports <<< "$ports"
 
-        # wait until connections are accepted
-        sleep 3
-        isready=0
-        for i in {1..10}; do
-          echo "Wait for connections to be ready ... $i/10"
-          (${{ github.action_path }}/wait-for-it.sh --quiet --timeout=3 --host=127.0.0.1 --port=${{ inputs.port }} || exit $?) && true # escape bash's pipefail
-          isready=$?
-          if [[ $isready -eq 0 ]]; then
-            break
+        # Check if the number of instances and ports match
+        if [[ ${#instances[@]} -ne ${#ports[@]} ]]; then
+          echo "Error: Number of instances and ports should match."
+          exit 1
+        fi
+
+        # Start Google Cloud SQL Proxy for each instance
+        for i in "${!instances[@]}"; do
+          instance="${instances[$i]}"
+          port="${ports[$i]}"
+
+          # write google application credentials to a temporary file to be used inside the container
+          mkdir -p /tmp/gce-cloudsql-proxy-$i
+          echo '${{ inputs.creds }}' > /tmp/gce-cloudsql-proxy-$i/key.json
+
+          # start container
+          docker run -d --net host --name gce-cloudsql-proxy-$i --restart on-failure \
+          -v /tmp/gce-cloudsql-proxy-$i:/tmp/gce-cloudsql-proxy \
+          gcr.io/cloudsql-docker/gce-proxy:$proxy_version \
+          /cloud_sql_proxy \
+            -credential_file /tmp/gce-cloudsql-proxy-$i/key.json \
+            -dir /tmp \
+            -instances=$instance=tcp:127.0.0.1:$port
+
+          # wait until connections are accepted
+          sleep 3
+          isready=0
+          for j in {1..10}; do
+            echo "Wait for connections to be ready for instance $instance on port $port ... $j/10"
+            (${{ github.action_path }}/wait-for-it.sh --quiet --timeout=3 --host=127.0.0.1 --port=$port || exit $?) && true # escape bash's pipefail
+            isready=$?
+            if [[ $isready -eq 0 ]]; then
+              break
+            fi
+            sleep 2
+          done
+
+          # print container logs
+          docker logs gce-cloudsql-proxy-$i
+
+          # exit with error code if we couldn't connect
+          if [[ $isready -ne 0 ]]; then
+            exit $isready
           fi
-          sleep 2
         done
 
-        # print container logs
-        docker logs $CONTAINER
-
-        # exit with error code if we couldn't connect
-        if [[ $isready -ne 0 ]]; then
-          exit $isready 
-        fi
+        # Set the output to be used by subsequent steps
+        echo "::set-output name=proxy_ids::$(docker ps -aq --filter 'name=gce-cloudsql-proxy-'*)"
